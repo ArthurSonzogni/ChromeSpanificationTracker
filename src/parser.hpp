@@ -33,6 +33,7 @@ struct Commit {
   std::string hash;
   std::string title;
   std::string tree;
+  std::string timestamp;
   std::vector<std::string> authors;
   std::vector<std::string> body;
   std::vector<std::string> committers;

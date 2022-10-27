@@ -131,8 +131,12 @@ Commit GetCommit(std::string hash) {
     if (line.find("author", 0) == 0) {
       size_t pos1 = line.find_last_of('<');
       size_t pos2 = line.find_last_of('@');
+      size_t pos3 = line.find(' ', pos2);
+      size_t pos4 = line.find(' ', pos3 + 1);
       std::string email = line.substr(pos1 + 1, pos2 - pos1 - 1);
+      std::string timestamp = line.substr(pos3 + 1, pos4 - pos3 - 1);
       commit.authors.push_back(email);
+      commit.timestamp = timestamp;
       continue;
     }
 
