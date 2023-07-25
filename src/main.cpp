@@ -22,10 +22,15 @@ int main(int argument_count, char** argument_values) {
       const bool is_test = file.right_file.find("test") != std::string::npos;
       for (auto hunk : file.hunks) {
         for (auto line : hunk.lines) {
-          if (line.content.find("raw_") == std::string::npos ||
-              line.content.find(", DanglingUntriaged") == std::string::npos) {
+          if (line.content.find("raw_") == std::string::npos) {
             continue;
           }
+
+          if (line.content.find("DanglingUntriaged") == std::string::npos &&
+              line.content.find("DanglingAcrossTasks") == std::string::npos) {
+            continue;
+          }
+
           switch (line.type) {
             case Line::Keep:
               break;
