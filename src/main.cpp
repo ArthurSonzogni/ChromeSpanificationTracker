@@ -27,7 +27,7 @@ int main(int argument_count, char** argument_values) {
           }
 
           if (line.content.find("DanglingUntriaged") == std::string::npos &&
-              line.content.find("DanglingAcrossTasks") == std::string::npos) {
+              line.content.find("DisableDanglingPtrDetection") == std::string::npos) {
             continue;
           }
 
