@@ -1,9 +1,6 @@
 cmake_minimum_required (VERSION 3.15)
 
-# --- Fetch FTXUI --------------------------------------------------------------
 include(FetchContent)
-set(FETCHCONTENT_UPDATES_DISCONNECTED TRUE)
-set(FETCHCONTENT_QUIET FALSE)
 
 FetchContent_Declare(subprocess
   GIT_REPOSITORY https://github.com/benman64/subprocess
@@ -23,34 +20,32 @@ if(NOT subprocess_POPULATED)
 endif()
 
 # ------------------------------------------------------------------------------
-project(chrome-dangling-untriaged-tracker LANGUAGES CXX)
+project(chrome-spanification-tracker LANGUAGES CXX)
 
-add_executable(chrome-dangling-untriaged-tracker
+add_executable(chrome-spanification-tracker
   src/main.cpp
   src/parser.cpp
   src/parser.hpp
 )
 
-target_include_directories(chrome-dangling-untriaged-tracker
+target_include_directories(chrome-spanification-tracker
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(chrome-dangling-untriaged-tracker
+target_link_libraries(chrome-spanification-tracker
   PRIVATE subprocess
 )
 
-if (NOT MSVC)
-  target_compile_options(chrome-dangling-untriaged-tracker
-    PRIVATE "-Wall"
-    PRIVATE "-Wextra"
-    PRIVATE "-pedantic"
-    PRIVATE "-Werror"
-    PRIVATE "-Wdeprecated"
-  )
-endif()
+target_compile_options(chrome-spanification-tracker
+  PRIVATE "-Wall"
+  PRIVATE "-Wextra"
+  PRIVATE "-pedantic"
+  PRIVATE "-Werror"
+  PRIVATE "-Wdeprecated"
+)
 
-set_target_properties(chrome-dangling-untriaged-tracker
-  PROPERTIES CXX_STANDARD 17)
+set_target_properties(chrome-spanification-tracker
+  PROPERTIES CXX_STANDARD 20)
 
-install(TARGETS chrome-dangling-untriaged-tracker
+install(TARGETS chrome-spanification-tracker
   RUNTIME DESTINATION "bin")
