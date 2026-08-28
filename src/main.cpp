@@ -11,6 +11,7 @@
 // non tests.
 const auto patterns = std::to_array({
     "#pragma allow_unsafe_buffers",
+    "#pragma allow_unsafe_libc_calls",
     "UNSAFE_BUFFERS(",
     "UNSAFE_TODO(",
     "UNSAFE_BUFFERS_USAGE",
