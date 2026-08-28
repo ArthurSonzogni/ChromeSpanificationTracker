@@ -98,6 +98,10 @@ int main(int argument_count, char** argument_values) {
                 << commit.title << std::endl;
     }
 
+    if (commit.hash == "59f56d97fff01d8fed1de28f4a7865d62f80ad1a") {
+      break;
+    }
+
     if (commit.parents.size() == 0)
       break;
 
