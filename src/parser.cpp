@@ -1,177 +1,262 @@
 // Copyright 2021 Arthur Sonzogni. All rights reserved.
 // Use of this source code is governed by the MIT license that can be found in
 // the LICENSE file.
-//
-// This file content was copied from:
-// https://github.com/ArthurSonzogni/git-tui
 
 #include "parser.hpp"
-#include <cassert>
-#include <regex>
-#include <sstream>
-#include "subprocess/ProcessBuilder.hpp"  // for RunBuilder, run
-#include "subprocess/basic_types.hpp"  // for PipeOption, PipeOption::pipe, CompletedProcess, PipeOption::close
 
-std::vector<File> Parse(std::string input) {
-  std::stringstream ss(input);
-  std::string current;
-  auto eat = [&]() -> bool { return !!std::getline(ss, current); };
-  auto get = [&] { return current; };
-  auto start_with = [&](const char* prefix) {
-    return get().rfind(prefix, 0) == 0;
+#include <algorithm>
+#include <array>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "subprocess/ProcessBuilder.hpp"
+#include "subprocess/basic_types.hpp"
+#include "subprocess/pipe.hpp"
+
+std::string BuildRegexPattern() {
+  std::string result;
+  result += "(";
+  for (size_t i = 0; i < patterns.size(); ++i) {
+    if (i > 0) {
+      result += "|";
+    }
+    for (char c : patterns[i]) {
+      switch (c) {
+        case '(':
+        case ')':
+        case '[':
+        case ']':
+        case '{':
+        case '}':
+        case '\\':
+        case '^':
+        case '$':
+        case '.':
+        case '*':
+        case '+':
+        case '?':
+        case '|':
+          result += '\\';
+          [[fallthrough]];
+        default:
+          result += c;
+          break;
+      }
+    }
+  }
+  result += ")";
+  return result;
+}
+
+namespace {
+
+class StreamLineReader {
+ public:
+  explicit StreamLineReader(subprocess::PipeHandle handle) : handle_(handle) {
+    buffer_.reserve(64 * 1024);
+  }
+
+  bool ReadLine(std::string_view& line) {
+    while (true) {
+      size_t newline_pos = buffer_.find('\n', pos_);
+      if (newline_pos != std::string::npos) {
+        line = std::string_view(buffer_.data() + pos_, newline_pos - pos_);
+        pos_ = newline_pos + 1;
+        return true;
+      }
+
+      if (pos_ > 0) {
+        buffer_.erase(0, pos_);
+        pos_ = 0;
+      }
+
+      char read_chunk[64 * 1024];
+      subprocess::ssize_t bytes_read =
+          subprocess::pipe_read(handle_, read_chunk, sizeof(read_chunk));
+      if (bytes_read <= 0) {
+        if (pos_ < buffer_.size()) {
+          line = std::string_view(buffer_.data() + pos_, buffer_.size() - pos_);
+          pos_ = buffer_.size();
+          return true;
+        }
+        return false;
+      }
+
+      buffer_.append(read_chunk, static_cast<size_t>(bytes_read));
+    }
+  }
+
+ private:
+  subprocess::PipeHandle handle_;
+  std::string buffer_;
+  size_t pos_ = 0;
+};
+
+}  // namespace
+
+void TrackSpanification(
+    std::string_view last_hash,
+    const std::function<void(const CommitReport&)>& on_commit) {
+  std::string range;
+  if (!last_hash.empty() && last_hash != "empty") {
+    range = std::string(last_hash) + "..HEAD";
+  } else {
+    auto check_rev = subprocess::run(
+        {"git", "rev-parse", "--verify", "-q",
+         "59f56d97fff01d8fed1de28f4a7865d62f80ad1a~1"},
+        subprocess::RunBuilder()
+            .cerr(subprocess::PipeOption::pipe)
+            .cout(subprocess::PipeOption::pipe)
+            .cin(subprocess::PipeOption::close));
+    if (check_rev.returncode == 0) {
+      range = "59f56d97fff01d8fed1de28f4a7865d62f80ad1a~1..HEAD";
+    } else {
+      range = "HEAD";
+    }
+  }
+  std::string regex = BuildRegexPattern();
+  std::string format = "--format=\x1e%H\x1f%at\x1f%al\x1f%s";
+
+  auto proc = subprocess::RunBuilder({
+                                         "git",
+                                         "log",
+                                         "--first-parent",
+                                         "--no-renames",
+                                         "-p",
+                                         "-U1",
+                                         "-G",
+                                         regex,
+                                         format,
+                                         range,
+                                     })
+                  .cout(subprocess::PipeOption::pipe)
+                  .cin(subprocess::PipeOption::close)
+                  .cerr(subprocess::PipeOption::inherit)
+                  .popen();
+
+  StreamLineReader reader(proc.cout);
+  std::string_view line;
+
+  CommitReport current_commit;
+  bool in_commit = false;
+  bool is_test = false;
+
+  auto flush_commit = [&]() -> bool {
+    if (!in_commit) {
+      return true;
+    }
+    in_commit = false;
+
+    // Normalize the count.
+    for (auto& c : current_commit.counts) {
+      int changed = std::min(c.added, c.removed);
+      c.added -= changed;
+      c.removed -= changed;
+
+      int changed_test = std::min(c.added_test, c.removed_test);
+      c.added_test -= changed_test;
+      c.removed_test -= changed_test;
+    }
+
+    bool all_empty = true;
+    for (const auto& c : current_commit.counts) {
+      if (!c.is_empty()) {
+        all_empty = false;
+        break;
+      }
+    }
+
+    if (!all_empty) {
+      on_commit(current_commit);
+    }
+
+    if (current_commit.hash == "59f56d97fff01d8fed1de28f4a7865d62f80ad1a") {
+      return false;
+    }
+
+    return true;
   };
 
-  bool parse_header = true;
-  std::vector<File> files;
-  while (eat()) {
-    if (start_with("diff")) {
-      parse_header = true;
-      files.emplace_back();
-      continue;
-    }
-
-    if (start_with("index")) {
-      assert(parse_header);
-      continue;
-    }
-
-    if (start_with("---") && parse_header) {
-      assert(files.size() != 0);
-      files.back().left_file = get().substr(3);
-      continue;
-    }
-
-    if (start_with("+++") && parse_header) {
-      assert(files.size() != 0);
-      files.back().right_file = get().substr(6);
-      continue;
-    }
-
-    if (start_with("@@")) {
-      assert(files.size() != 0);
-      files.back().hunks.emplace_back();
-      static std::regex regex(R"(@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@.*)");
-      std::smatch match;
-      bool matched = std::regex_match(current, match, regex);
-      assert(matched);
-      (void)matched;
-      files.back().hunks.back().left_start = std::stoi(match[1].str());
-      files.back().hunks.back().right_start = std::stoi(match[2].str());
-      parse_header = false;
-      continue;
-    }
-
-    if (start_with(" ")) {
-      files.back().hunks.back().lines.emplace_back();
-      files.back().hunks.back().lines.back().type = Line::Keep;
-      files.back().hunks.back().lines.back().content = get().substr(1);
-      continue;
-    }
-
-    if (start_with("+")) {
-      files.back().hunks.back().lines.emplace_back();
-      files.back().hunks.back().lines.back().type = Line::Add;
-      files.back().hunks.back().lines.back().content = get().substr(1);
-      continue;
-    }
-
-    if (start_with("-")) {
-      files.back().hunks.back().lines.emplace_back();
-      files.back().hunks.back().lines.back().type = Line::Delete;
-      files.back().hunks.back().lines.back().content = get().substr(1);
-      continue;
-    }
-  }
-  return files;
-}
-
-std::string ResolveHead() {
-  auto process = subprocess::run({"git", "rev-list", "HEAD", "-1"},
-                                 subprocess::RunBuilder()                 //
-                                     .cerr(subprocess::PipeOption::pipe)  //
-                                     .cout(subprocess::PipeOption::pipe)  //
-                                     .cin(subprocess::PipeOption::close)  //
-  );
-
-  std::string out = std::move(process.cout);
-  out.erase(std::remove(std::begin(out), std::end(out), '\n'), std::end(out));
-  return out;
-}
-
-Commit GetCommit(std::string hash) {
-  Commit commit;
-  commit.hash = hash;
-
-  auto process = subprocess::run(
-      {
-          "git",
-          "cat-file",
-          "commit",
-          hash,
-      },
-      subprocess::RunBuilder()                 //
-          .cerr(subprocess::PipeOption::pipe)  //
-          .cout(subprocess::PipeOption::pipe)  //
-          .cin(subprocess::PipeOption::close)  //
-  );
-  std::stringstream ss(process.cout);
-
-  std::string line;
-  while (std::getline(ss, line)) {
-    if (line.find("tree ", 0) == 0) {
-      commit.tree = line.substr(5);
-      continue;
-    }
-
-    if (line.find("parent", 0) == 0) {
-      commit.parents.push_back(line.substr(7));
-      continue;
-    }
-
-    if (line.find("author", 0) == 0) {
-      size_t pos1 = line.find_last_of('<');
-      size_t pos2 = line.find_last_of('@');
-      size_t pos3 = line.find(' ', pos2);
-      size_t pos4 = line.find(' ', pos3 + 1);
-      std::string email = line.substr(pos1 + 1, pos2 - pos1 - 1);
-      std::string timestamp = line.substr(pos3 + 1, pos4 - pos3 - 1);
-      commit.authors.push_back(email);
-      commit.timestamp = timestamp;
-      continue;
-    }
-
-    if (line.find("committer", 0) == 0) {
-      commit.committers.push_back(line.substr(10));
-      continue;
-    }
-
-    if (line.empty()) {
-      int index = -1;
-      while (std::getline(ss, line)) {
-        ++index;
-        if (index == 0)
-          commit.title = std::move(line);
-        else if (index >= 2)
-          commit.body.push_back(std::move(line));
+  while (reader.ReadLine(line)) {
+    if (line.starts_with('\x1e')) {
+      if (!flush_commit()) {
+        break;
       }
-      break;
+
+      in_commit = true;
+      is_test = false;
+      current_commit = CommitReport{};
+
+      std::string_view header = line.substr(1);
+      auto split_field = [](std::string_view& rest) -> std::string_view {
+        size_t pos = rest.find('\x1f');
+        if (pos == std::string_view::npos) {
+          std::string_view field = rest;
+          rest = {};
+          return field;
+        }
+        std::string_view field = rest.substr(0, pos);
+        rest = rest.substr(pos + 1);
+        return field;
+      };
+
+      current_commit.hash = std::string(split_field(header));
+      current_commit.timestamp = std::string(split_field(header));
+      current_commit.author = std::string(split_field(header));
+      current_commit.title = std::string(header);
+      continue;
+    }
+
+    if (!in_commit) {
+      continue;
+    }
+
+    if (line.starts_with("+++ ")) {
+      std::string_view path = line.substr(4);
+      if (path != "/dev/null") {
+        is_test = (path.find("test") != std::string_view::npos);
+      }
+      continue;
+    }
+
+    if (line.starts_with("--- ")) {
+      std::string_view path = line.substr(4);
+      if (path != "/dev/null") {
+        is_test = (path.find("test") != std::string_view::npos);
+      }
+      continue;
+    }
+
+    if (line.starts_with('+')) {
+      std::string_view content = line.substr(1);
+      for (size_t i = 0; i < patterns.size(); ++i) {
+        if (content.find(patterns[i]) != std::string_view::npos) {
+          if (is_test) {
+            current_commit.counts[i].added_test++;
+          } else {
+            current_commit.counts[i].added++;
+          }
+        }
+      }
+      continue;
+    }
+
+    if (line.starts_with('-')) {
+      std::string_view content = line.substr(1);
+      for (size_t i = 0; i < patterns.size(); ++i) {
+        if (content.find(patterns[i]) != std::string_view::npos) {
+          if (is_test) {
+            current_commit.counts[i].removed_test++;
+          } else {
+            current_commit.counts[i].removed++;
+          }
+        }
+      }
+      continue;
     }
   }
-  return commit;
-}
 
-std::vector<File> GetFiles(const Commit& commit) {
-  auto process = subprocess::run(
-      {
-          "git",
-          "diff",
-          "-U1",
-          commit.hash + "~..." + commit.hash,
-      },
-      subprocess::RunBuilder()                 //
-          .cerr(subprocess::PipeOption::pipe)  //
-          .cout(subprocess::PipeOption::pipe)  //
-          .cin(subprocess::PipeOption::close)  //
-  );
-  return Parse(process.cout);
+  flush_commit();
+  proc.close();
 }
